@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { resolvePort } from "../server/app.mjs";
+import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import {
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
@@ -22,8 +23,15 @@ import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
 const injectorPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(injectorPath), "..");
 const defaultCodexDebuggingPort = 9229;
+const independentCodexProfilePath = "/private/tmp/codex-taskboard-independent-profile-v2";
 const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js");
-const automationPoliciesPath = path.join(projectRoot, ".data", "codex-automation-policies.json");
+const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
+  ? path.resolve(process.env.CODEX_TASKBOARD_DATA_DIR)
+  : path.join(projectRoot, ".data");
+const automationPoliciesPath = path.join(
+  taskboardDataDirectory,
+  "codex-automation-policies.json",
+);
 const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardPageUrl = `${taskboardOrigin}/?host=codex`;
@@ -186,18 +194,17 @@ function createTaskboardSupervisor({ detached }) {
   return { ensure, stop };
 }
 
-function codexIsRunning() {
-  return spawnSync("/usr/bin/pgrep", ["-x", "ChatGPT"], { stdio: "ignore" }).status === 0;
-}
-
 function launchCodex(appPath, port) {
+  const executablePath = path.join(
+    appPath,
+    "Contents",
+    "MacOS",
+    path.basename(appPath, ".app"),
+  );
   return spawn(
-    "/usr/bin/open",
+    executablePath,
     [
-      "-W",
-      "-a",
-      appPath,
-      "--args",
+      `--user-data-dir=${independentCodexProfilePath}`,
       `--remote-debugging-port=${port}`,
       `--remote-allow-origins=http://127.0.0.1:${port}`,
     ],
@@ -878,29 +885,17 @@ async function restoreQuotaPolicies(cdp) {
 }
 
 async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
-  const {
-    instruction,
-    skillDisplayName,
-    skillName,
-    skillPath,
-  } = request;
+  const { instruction } = request;
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
     const prepared = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const instruction = ${JSON.stringify(instruction)};
-        const skillName = ${JSON.stringify(skillName)};
-        const skillPath = ${JSON.stringify(skillPath)};
         const editor = Array.from(document.querySelectorAll(
           '[data-codex-composer="true"][contenteditable="true"]'
         )).find((candidate) => candidate.getClientRects().length > 0);
         if (!editor) return { ready: false };
-        const mention = Array.from(editor.querySelectorAll("[skill-mention-name]"))
-          .find((candidate) => (
-            candidate.getAttribute("skill-mention-name") === skillName
-            && candidate.getAttribute("skill-mention-path") === skillPath
-          ));
-        if (mention && (editor.textContent || "").includes(instruction)) {
+        if ((editor.textContent || "").includes(instruction)) {
           return { ready: true, matches: true };
         }
         editor.focus();
@@ -920,89 +915,18 @@ async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
     }
     if (prepared.result.value.matches) return { prefilled: true };
 
-    await cdp.send("Input.insertText", { text: "$" });
+    await cdp.send("Input.insertText", { text: instruction });
     break;
   }
 
-  let selectedSkill = false;
-  while (Date.now() < deadline) {
-    const selection = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const displayName = ${JSON.stringify(skillDisplayName)};
-        const overlay = Array.from(document.querySelectorAll(
-          '[data-composer-overlay-floating-ui="true"]'
-        )).find((candidate) => candidate.getClientRects().length > 0);
-        if (!overlay) return { ready: false };
-        const button = Array.from(overlay.querySelectorAll(
-          'button[data-list-navigation-item="true"]'
-        )).find((candidate) => Array.from(candidate.querySelectorAll("span"))
-          .some((label) => (label.textContent || "").trim() === displayName));
-        if (!button) return { ready: true, found: false };
-        button.click();
-        return { ready: true, found: true };
-      })()`,
-      contextId: executionContextId,
-      returnByValue: true,
-    });
-    if (selection.result.value?.found) {
-      selectedSkill = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  }
-  if (!selectedSkill) {
-    throw new Error(`Timed out while selecting the ${skillDisplayName} Skill`);
-  }
-
-  let mentionReady = false;
-  while (Date.now() < deadline) {
-    const mention = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const skillName = ${JSON.stringify(skillName)};
-        const skillPath = ${JSON.stringify(skillPath)};
-        const editor = Array.from(document.querySelectorAll(
-          '[data-codex-composer="true"][contenteditable="true"]'
-        )).find((candidate) => candidate.getClientRects().length > 0);
-        if (!editor) return { ready: false };
-        const selected = Array.from(editor.querySelectorAll("[skill-mention-name]"))
-          .find((candidate) => candidate.getAttribute("skill-mention-name") === skillName);
-        return {
-          ready: Boolean(selected),
-          pathMatches: selected?.getAttribute("skill-mention-path") === skillPath,
-        };
-      })()`,
-      contextId: executionContextId,
-      returnByValue: true,
-    });
-    if (mention.result.value?.ready) {
-      if (!mention.result.value.pathMatches) {
-        throw new Error(`Codex selected a different ${skillDisplayName} Skill`);
-      }
-      mentionReady = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  }
-  if (!mentionReady) {
-    throw new Error(`Timed out while creating the ${skillDisplayName} Skill mention`);
-  }
-
-  await cdp.send("Input.insertText", { text: instruction });
   while (Date.now() < deadline) {
     const verified = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const instruction = ${JSON.stringify(instruction)};
-        const skillName = ${JSON.stringify(skillName)};
-        const skillPath = ${JSON.stringify(skillPath)};
         const editor = Array.from(document.querySelectorAll(
           '[data-codex-composer="true"][contenteditable="true"]'
         )).find((candidate) => candidate.getClientRects().length > 0);
-        const mention = editor && Array.from(editor.querySelectorAll("[skill-mention-name]"))
-          .find((candidate) => (
-            candidate.getAttribute("skill-mention-name") === skillName
-            && candidate.getAttribute("skill-mention-path") === skillPath
-          ));
-        return Boolean(mention && (editor.textContent || "").includes(instruction));
+        return Boolean(editor && (editor.textContent || "").includes(instruction));
       })()`,
       contextId: executionContextId,
       returnByValue: true,
@@ -1193,10 +1117,12 @@ async function injectTarget(
     reloaded.catch(() => {});
     await cdp.send("Page.reload");
     await reloaded;
+    await cdp.send("Page.setBypassCSP", { enabled: true });
     await evaluateInjectionSource(cdp, source);
     await publishInjectionScriptIdentifier(cdp, scriptIdentifier);
     if (keepAlive) await publishHostHeartbeat(cdp, startupToken);
     if (shouldOpen) {
+      await waitForInjectionStatus(cdp, false, sourceHash, 60_000);
       await cdp.send("Runtime.evaluate", {
         expression: `(() => {
           const taskboard = window.__codexTaskboardInjection__;
@@ -1243,7 +1169,10 @@ async function injectAll(
   startupToken,
 ) {
   const targets = await codexTargets(port);
-  if (targets.length === 0) throw new Error("No Codex renderer target found");
+  if (targets.length === 0) {
+    if (keepAlive) return [];
+    throw new Error("No Codex renderer target found");
+  }
 
   const activeIds = new Set(targets.map((target) => target.id));
   for (const [id, connection] of injectedTargets) {
@@ -1307,6 +1236,7 @@ ${runtimeSource}`,
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  process.env.CODEX_EXECUTABLE = resolveCodexExecutable({ appPath: options.appPath });
   const cdpVersionUrl = `http://127.0.0.1:${options.port}/json/version`;
 
   if (options.daemon) {
@@ -1353,15 +1283,14 @@ async function main() {
   const supervisor = createTaskboardSupervisor({ detached: !options.watch });
 
   try {
-    const cdpReachable = await isReachable(cdpVersionUrl);
+    let cdpReachable = await isReachable(cdpVersionUrl);
+    if (!cdpReachable && options.watch && !options.launch) {
+      await waitUntilReachable(cdpVersionUrl, 60_000);
+      cdpReachable = true;
+    }
     if (!cdpReachable) {
       if (!options.launch) {
         throw new Error(`Codex CDP is not listening on 127.0.0.1:${options.port}`);
-      }
-      if (codexIsRunning()) {
-        throw new Error(
-          "Codex is already running without this CDP port. Quit Codex completely, then run this command again.",
-        );
       }
     }
 
@@ -1404,6 +1333,7 @@ async function main() {
     }
     if (lastError) throw lastError;
     console.log(JSON.stringify({ injected: firstResults }, null, 2));
+    let openPending = options.open && firstResults.length === 0;
 
     if (!options.watch) {
       codexProcess?.unref();
@@ -1435,7 +1365,7 @@ async function main() {
           options.port,
           source,
           sourceHash,
-          false,
+          openPending,
           null,
           injectedTargets,
           true,
@@ -1443,7 +1373,10 @@ async function main() {
           options.attachExisting,
           options.startupToken,
         );
-        if (results.length > 0) console.log(JSON.stringify({ injected: results }, null, 2));
+        if (results.length > 0) {
+          openPending = false;
+          console.log(JSON.stringify({ injected: results }, null, 2));
+        }
       } catch (error) {
         if (codexProcess && codexProcess.exitCode !== null) break;
         console.error(`Waiting for Codex renderer: ${error.message}`);
