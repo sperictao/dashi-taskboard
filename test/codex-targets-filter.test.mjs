@@ -10,6 +10,7 @@ const end = src.indexOf("function logInjector");
 assert.ok(start > 0 && end > start, "codexTargets block not found in injector source");
 const build = new Function(
   "fetchJson",
+  "validatedLoopbackCdpWebSocketUrl",
   `${src.slice(start, end)}; return { codexTargets };`,
 );
 
@@ -52,7 +53,10 @@ const GLOBAL_DICTATION = {
 const SERVICE_WORKER = { type: "service_worker", title: "", url: "app://-/sw.js" };
 
 async function pick(targets) {
-  const { codexTargets } = build(async () => targets);
+  const { codexTargets } = build(
+    async () => targets,
+    (value) => value,
+  );
   return (await codexTargets(9229)).map((t) => t.webSocketDebuggerUrl);
 }
 
