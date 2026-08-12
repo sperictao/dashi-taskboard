@@ -6,7 +6,8 @@ import vm from "node:vm";
 import { parseTaskboardAutomationHostRequest } from "../shared/taskboard-automation.mjs";
 
 const sourceUrl = new URL("../inject/codex-taskboard.user.js", import.meta.url);
-const source = await readFile(sourceUrl, "utf8");
+// 归一化行尾：Windows 上 core.autocrlf 检出为 CRLF，切片逻辑按 LF 匹配
+const source = (await readFile(sourceUrl, "utf8")).replace(/\r\n/g, "\n");
 const webStyles = await readFile(new URL("../web/src/styles.css", import.meta.url), "utf8");
 const webApp = await readFile(new URL("../web/src/App.tsx", import.meta.url), "utf8");
 const embeddedHost = await readFile(new URL("../web/src/embeddedHost.mjs", import.meta.url), "utf8");
