@@ -958,7 +958,7 @@ async function resolveTaskboardBaseUrl(env, overrides) {
 export function defaultLauncherRuntimeFile(env) {
   const home = env.USERPROFILE ?? env.HOME;
   if (!home) return null;
-  return path.join(home, ".dashi-taskboard-launcher", "launcher-runtime.json");
+  return path.join(home, ".codex-pro-max", "launcher-runtime.json");
 }
 
 async function resolveCompanionUrl(env, overrides) {

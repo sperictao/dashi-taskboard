@@ -80,11 +80,11 @@ test("CODEX_TASKBOARD_URL overrides the service origin", async () => {
 test("default launcher runtime file resolves under the user home", () => {
   assert.equal(
     defaultLauncherRuntimeFile({ USERPROFILE: "C:\\Users\\Tester" }),
-    path.join("C:\\Users\\Tester", ".dashi-taskboard-launcher", "launcher-runtime.json"),
+    path.join("C:\\Users\\Tester", ".codex-pro-max", "launcher-runtime.json"),
   );
   assert.equal(
     defaultLauncherRuntimeFile({ HOME: "/home/tester" }),
-    path.join("/home/tester", ".dashi-taskboard-launcher", "launcher-runtime.json"),
+    path.join("/home/tester", ".codex-pro-max", "launcher-runtime.json"),
   );
   assert.equal(defaultLauncherRuntimeFile({}), null);
 });
