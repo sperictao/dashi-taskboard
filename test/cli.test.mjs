@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { main, parseArgs } from "../cli/taskctl.mjs";
@@ -74,6 +75,104 @@ test("CODEX_TASKBOARD_URL overrides the service origin", async () => {
 
   assert.equal(result.exitCode, 0);
   assert.equal(requestedUrl.toString(), "https://tasks.example.test/api/projects");
+});
+
+test("issue list discovers the launcher runtime endpoint without inherited env", async () => {
+  let requestedUrl;
+  let descriptorPath;
+  const result = await run(
+    ["issue", "list", "--project", "local", "--status", "todo", "--json"],
+    async (url) => {
+      requestedUrl = url;
+      return response({ tasks: [] });
+    },
+    {
+      env: {
+        CODEX_THREAD_ID: "thread-current",
+        USERPROFILE: "C:\\Users\\Tester",
+      },
+      readFile: async (filePath) => {
+        descriptorPath = filePath;
+        return JSON.stringify({
+          version: 1,
+          pid: 123,
+          url: "http://127.0.0.1:47823/instance-token",
+        });
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(
+    descriptorPath,
+    path.join("C:\\Users\\Tester", ".dashi-taskboard-launcher", "launcher-runtime.json"),
+  );
+  assert.equal(
+    requestedUrl.toString(),
+    "http://127.0.0.1:47823/instance-token/api/tasks?projectId=local&status=todo",
+  );
+});
+
+test("missing default launcher runtime endpoint falls back to the local service", async () => {
+  let requestedUrl;
+  const result = await run(
+    ["project", "list", "--json"],
+    async (url) => {
+      requestedUrl = url;
+      return response({ projects: [] });
+    },
+    {
+      env: { USERPROFILE: "C:\\Users\\Tester" },
+      readFile: async () => {
+        throw Object.assign(new Error("not found"), { code: "ENOENT" });
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(requestedUrl.toString(), "http://127.0.0.1:47823/api/projects");
+});
+
+test("missing explicit launcher runtime endpoint remains an error", async () => {
+  const result = await run(
+    ["project", "list", "--json"],
+    async () => response({ projects: [] }),
+    {
+      env: { CODEX_TASKBOARD_RUNTIME_FILE: "C:\\runtime\\missing.json" },
+      readFile: async () => {
+        throw Object.assign(new Error("not found"), { code: "ENOENT" });
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.stderr.error.code, "SERVICE_UNAVAILABLE");
+});
+
+test("CODEX_TASKBOARD_URL takes precedence over runtime endpoint discovery", async () => {
+  let requestedUrl;
+  let descriptorRead = false;
+  const result = await run(
+    ["project", "list", "--json"],
+    async (url) => {
+      requestedUrl = url;
+      return response({ projects: [] });
+    },
+    {
+      env: {
+        CODEX_TASKBOARD_URL: "https://tasks.example.test/token",
+        CODEX_TASKBOARD_RUNTIME_FILE: "C:\\runtime\\launcher-runtime.json",
+      },
+      readFile: async () => {
+        descriptorRead = true;
+        throw new Error("must not read runtime descriptor");
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(descriptorRead, false);
+  assert.equal(requestedUrl.toString(), "https://tasks.example.test/token/api/projects");
 });
 
 test("project create sends id, name, and an absolute workspace path", async () => {

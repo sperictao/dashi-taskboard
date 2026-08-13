@@ -914,13 +914,17 @@ function resolveApiUrl(baseUrl, pathname) {
 
 async function resolveTaskboardBaseUrl(env, overrides) {
   if (env.CODEX_TASKBOARD_URL !== undefined) return env.CODEX_TASKBOARD_URL;
-  const descriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
+  const explicitDescriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
+  const descriptorPath = explicitDescriptorPath ?? defaultLauncherRuntimeFile(env);
   if (!descriptorPath) return DEFAULT_API_URL;
   let descriptor;
   try {
     const read = overrides.readFile ?? readFile;
     descriptor = JSON.parse(await read(descriptorPath, "utf8"));
   } catch (error) {
+    if (explicitDescriptorPath === undefined && error?.code === "ENOENT") {
+      return DEFAULT_API_URL;
+    }
     throw new TaskctlError("Cannot read the active Taskboard launcher endpoint", {
       code: "SERVICE_UNAVAILABLE",
       exitCode: 3,
@@ -934,6 +938,12 @@ async function resolveTaskboardBaseUrl(env, overrides) {
     });
   }
   return descriptor.url;
+}
+
+function defaultLauncherRuntimeFile(env) {
+  const home = env.USERPROFILE ?? env.HOME;
+  if (!home) return null;
+  return path.join(home, ".dashi-taskboard-launcher", "launcher-runtime.json");
 }
 
 function resolveCompanionUrl(env) {
