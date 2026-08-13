@@ -16,7 +16,14 @@ import {
 export const SCHEMA_VERSION = 2;
 export const DEFAULT_API_URL = "http://127.0.0.1:47823";
 
+const sourceRuntimeFile = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  ".data",
+  "launcher-runtime.json",
+);
 const BOOLEAN_OPTIONS = new Set(["json"]);
+const GLOBAL_OPTIONS = new Set(["runtime-file"]);
 
 const COMMAND_OPTIONS = new Map([
   ["project list", new Set(["json"])],
@@ -188,11 +195,14 @@ async function execute(parsed, overrides) {
   }
   validateOptions(parsed.options, allowedOptions);
 
-  const env = overrides.env ?? process.env;
+  const processEnv = overrides.env ?? process.env;
+  const env = parsed.options["runtime-file"] === undefined
+    ? processEnv
+    : { ...processEnv, CODEX_TASKBOARD_RUNTIME_FILE: parsed.options["runtime-file"] };
   const usesCompanionControl = command.startsWith("cloud ") || command === "project map";
   const api = createApiClient(overrides, {
     baseUrl: usesCompanionControl || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
-      ? resolveCompanionUrl(env)
+      ? await resolveCompanionUrl(env, overrides)
       : await resolveTaskboardBaseUrl(env, overrides),
   });
   switch (command) {
@@ -838,7 +848,7 @@ function optionalField(name, value) {
 
 function validateOptions(options, allowedOptions) {
   for (const name of Object.keys(options)) {
-    if (!allowedOptions.has(name)) {
+    if (!allowedOptions.has(name) && !GLOBAL_OPTIONS.has(name)) {
       throw usageError(`Unknown option --${name}`);
     }
   }
@@ -914,15 +924,20 @@ function resolveApiUrl(baseUrl, pathname) {
 
 async function resolveTaskboardBaseUrl(env, overrides) {
   if (env.CODEX_TASKBOARD_URL !== undefined) return env.CODEX_TASKBOARD_URL;
-  const explicitDescriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
-  const descriptorPath = explicitDescriptorPath ?? defaultLauncherRuntimeFile(env);
-  if (!descriptorPath) return DEFAULT_API_URL;
+  // 缺省端点发现顺序：外部 launcher 发布到用户级 home，上游自带 launcher
+  // 发布到 vendor 内 .data，两处都兜底（MSIX/Store 激活的 Codex 无法继承 env）
+  const configuredDescriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
+  const descriptorPath = configuredDescriptorPath ?? defaultLauncherRuntimeFile(env) ?? sourceRuntimeFile;
   let descriptor;
   try {
-    const read = overrides.readFile ?? readFile;
+    // 缺省发现走真实 fs 读（测试里 readFile 仅用于拦截显式配置路径，
+    // 避免与 description/attachment 等其它文件读的 mock 冲突）
+    const read = configuredDescriptorPath === undefined
+      ? readFile
+      : (overrides.readFile ?? readFile);
     descriptor = JSON.parse(await read(descriptorPath, "utf8"));
   } catch (error) {
-    if (explicitDescriptorPath === undefined && error?.code === "ENOENT") {
+    if (configuredDescriptorPath === undefined && error?.code === "ENOENT") {
       return DEFAULT_API_URL;
     }
     throw new TaskctlError("Cannot read the active Taskboard launcher endpoint", {
@@ -940,16 +955,17 @@ async function resolveTaskboardBaseUrl(env, overrides) {
   return descriptor.url;
 }
 
-function defaultLauncherRuntimeFile(env) {
+export function defaultLauncherRuntimeFile(env) {
   const home = env.USERPROFILE ?? env.HOME;
   if (!home) return null;
   return path.join(home, ".dashi-taskboard-launcher", "launcher-runtime.json");
 }
 
-function resolveCompanionUrl(env) {
-  const rawUrl = env.CODEX_TASKBOARD_COMPANION_URL
-    ?? env.CODEX_TASKBOARD_URL
-    ?? DEFAULT_API_URL;
+async function resolveCompanionUrl(env, overrides) {
+  const rawUrl = env.CODEX_TASKBOARD_COMPANION_URL !== undefined
+    ? env.CODEX_TASKBOARD_COMPANION_URL
+    : await resolveTaskboardBaseUrl(env, overrides);
+
   let url;
   try {
     url = new URL(rawUrl);
@@ -959,18 +975,21 @@ function resolveCompanionUrl(env) {
   const isLoopback = url.hostname === "localhost"
     || url.hostname === "127.0.0.1"
     || url.hostname === "[::1]";
+  const instanceToken = url.pathname.replace(/^\//, "").replace(/\/$/, "");
+  const hasValidPathname = url.pathname === "/"
+    || (/^[a-z0-9-]{16,128}$/i.test(instanceToken) && !instanceToken.includes("/"));
   if (
     !isLoopback
     || (url.protocol !== "http:" && url.protocol !== "https:")
     || url.username
     || url.password
-    || (url.pathname !== "/" && url.pathname !== "")
+    || !hasValidPathname
     || url.search
     || url.hash
   ) {
-    throw usageError("Local companion URL must be a loopback HTTP or HTTPS origin");
+    throw usageError("Local companion URL must be a loopback HTTP or HTTPS endpoint");
   }
-  return url.origin;
+  return url.toString().replace(/\/$/, "");
 }
 
 async function readResponse(response) {

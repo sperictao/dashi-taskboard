@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
-import { main, parseArgs } from "../cli/taskctl.mjs";
+import { defaultLauncherRuntimeFile, main, parseArgs } from "../cli/taskctl.mjs";
 
 function capture() {
   let value = "";
@@ -77,40 +77,37 @@ test("CODEX_TASKBOARD_URL overrides the service origin", async () => {
   assert.equal(requestedUrl.toString(), "https://tasks.example.test/api/projects");
 });
 
-test("issue list discovers the launcher runtime endpoint without inherited env", async () => {
+test("default launcher runtime file resolves under the user home", () => {
+  assert.equal(
+    defaultLauncherRuntimeFile({ USERPROFILE: "C:\\Users\\Tester" }),
+    path.join("C:\\Users\\Tester", ".dashi-taskboard-launcher", "launcher-runtime.json"),
+  );
+  assert.equal(
+    defaultLauncherRuntimeFile({ HOME: "/home/tester" }),
+    path.join("/home/tester", ".dashi-taskboard-launcher", "launcher-runtime.json"),
+  );
+  assert.equal(defaultLauncherRuntimeFile({}), null);
+});
+
+test("--runtime-file reads the launcher endpoint without a leading environment assignment", async () => {
   let requestedUrl;
-  let descriptorPath;
   const result = await run(
-    ["issue", "list", "--project", "local", "--status", "todo", "--json"],
+    ["project", "list", "--runtime-file", "/tmp/taskboard-runtime.json"],
     async (url) => {
       requestedUrl = url;
-      return response({ tasks: [] });
+      return response({ projects: [] });
     },
     {
-      env: {
-        CODEX_THREAD_ID: "thread-current",
-        USERPROFILE: "C:\\Users\\Tester",
-      },
+      env: {},
       readFile: async (filePath) => {
-        descriptorPath = filePath;
-        return JSON.stringify({
-          version: 1,
-          pid: 123,
-          url: "http://127.0.0.1:47823/instance-token",
-        });
+        assert.equal(filePath, "/tmp/taskboard-runtime.json");
+        return JSON.stringify({ version: 1, url: "http://127.0.0.1:51550/token" });
       },
     },
   );
 
   assert.equal(result.exitCode, 0);
-  assert.equal(
-    descriptorPath,
-    path.join("C:\\Users\\Tester", ".dashi-taskboard-launcher", "launcher-runtime.json"),
-  );
-  assert.equal(
-    requestedUrl.toString(),
-    "http://127.0.0.1:47823/instance-token/api/tasks?projectId=local&status=todo",
-  );
+  assert.equal(requestedUrl.toString(), "http://127.0.0.1:51550/token/api/projects");
 });
 
 test("missing default launcher runtime endpoint falls back to the local service", async () => {

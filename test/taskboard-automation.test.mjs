@@ -187,6 +187,23 @@ test("the stable name and generated prompt are project-scoped and encode the cla
   assert.match(prompt, /已绑定.*branch.*worktree/);
 });
 
+test("the generated automation command uses an argv runtime file instead of an env assignment", () => {
+  const previous = process.env.CODEX_TASKBOARD_RUNTIME_FILE;
+  // Windows 上 process.execPath 是全路径且 cliPath 为反斜杠，路径断言保持平台无关
+  process.env.CODEX_TASKBOARD_RUNTIME_FILE = "/Users/example/Library/Application Support/Codex Taskboard/launcher-runtime.json";
+  try {
+    const prompt = buildTaskboardAutomationPrompt(baseRequest);
+    assert.match(prompt, /taskctl\.mjs'\s+--runtime-file\s+'[^']+launcher-runtime\.json'/);
+    assert.doesNotMatch(prompt, /CODEX_TASKBOARD_RUNTIME_FILE=/);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CODEX_TASKBOARD_RUNTIME_FILE;
+    } else {
+      process.env.CODEX_TASKBOARD_RUNTIME_FILE = previous;
+    }
+  }
+});
+
 test("the generated cron spec uses the selected whitelisted local Codex options", () => {
   assert.deepEqual(buildTaskboardAutomationSpec(baseRequest), {
     kind: "cron",
