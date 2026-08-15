@@ -559,7 +559,7 @@ class CdpConnection {
 }
 
 // 页面识别参考 Codex++：Windows 版主页面可能是 https://chatgpt.com 或标题含 codex，
-// 不一定是 app://；浮层/快捷聊天窗按 initialRoute 排除，避免注入错窗口
+// 不一定是 app://；浮层/快捷聊天窗按 initialRoute 排除，合成表面按页面路径排除，避免注入错窗口
 function targetInitialRoute(target) {
   try {
     const url = new URL(target.url || "");
@@ -599,6 +599,18 @@ function isExcludedCodexRoute(target) {
   );
 }
 
+function isCodexCompositionSurface(target) {
+  try {
+    const url = new URL(target.url || "");
+    return (
+      url.protocol === "app:"
+      && url.pathname.toLowerCase().endsWith("/avatar-overlay-composition-surface.html")
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function codexTargets(port) {
   const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
   return targets.filter(isCodexTarget).map((target) => {
@@ -617,6 +629,7 @@ function isCodexTarget(target) {
       target.type === "page" &&
       target.webSocketDebuggerUrl &&
       !isExcludedCodexRoute(target) &&
+      !isCodexCompositionSurface(target) &&
       (target.url?.startsWith("app://") || isCodexPageTarget(target))
   );
 }
