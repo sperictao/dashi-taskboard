@@ -8,6 +8,12 @@ import type {
   AiChatThreadSnapshot,
   Attachment,
   Comment,
+  ComposerCandidatesQuery,
+  ComposerCandidatesResponse,
+  ComposerRebindRequest,
+  ComposerRebindResponse,
+  ComposerTurnInput,
+  CodexThreadBinding,
   DevelopmentScan,
   HostContext,
   IssueRelationType,
@@ -199,10 +205,33 @@ export async function getTaskboardRevision(
 export async function getHostRuntime(signal?: AbortSignal): Promise<HostContext | null> {
   const data = await request<{
     runtime: (Pick<HostContext, "threadId" | "threadRunning" | "threadTodoProgress"> & {
+      codexProjectId: string | null;
+      codexProjectKind: "local" | "remote" | null;
+      codexHostId: string | null;
+      workspacePath: string | null;
       updatedAt: number;
     }) | null;
   }>("/api/local/host-runtime", { signal });
-  return data.runtime;
+  if (!data.runtime) return null;
+  const { codexProjectId, codexProjectKind, codexHostId, workspacePath } = data.runtime;
+  return {
+    threadId: data.runtime.threadId,
+    threadRunning: data.runtime.threadRunning,
+    threadTodoProgress: data.runtime.threadTodoProgress,
+    ...(codexProjectId && codexProjectKind && codexHostId && workspacePath
+      ? {
+          projectId: codexProjectId,
+          workspacePath,
+          projects: [{
+            id: codexProjectId,
+            name: codexProjectId,
+            projectKind: codexProjectKind,
+            workspacePath,
+            hostId: codexHostId,
+          }],
+        }
+      : {}),
+  };
 }
 
 export async function getCodexThreadProgress(
@@ -223,12 +252,17 @@ export async function getCodexThreadProgress(
 
 export async function publishHostRuntime(context: HostContext): Promise<void> {
   if (!context.threadId || context.threadRunning === undefined) return;
+  const project = context.projects?.find((candidate) => candidate.id === context.projectId);
   await request("/api/local/host-runtime", {
     method: "PUT",
     body: JSON.stringify({
       threadId: context.threadId,
       threadRunning: context.threadRunning,
       threadTodoProgress: context.threadTodoProgress ?? null,
+      codexProjectId: project?.id ?? null,
+      codexProjectKind: project?.projectKind ?? null,
+      codexHostId: project?.hostId ?? null,
+      workspacePath: project?.workspacePath ?? null,
     }),
   });
 }
@@ -241,6 +275,29 @@ export async function getAiChatCatalog(
     `/api/local/ai/catalog?projectId=${encodeURIComponent(projectId)}`,
     { signal },
   );
+}
+
+export async function getAiChatComposerCandidates(
+  input: ComposerCandidatesQuery,
+  signal?: AbortSignal,
+): Promise<ComposerCandidatesResponse> {
+  const query = new URLSearchParams({
+    trigger: input.trigger,
+    query: input.query,
+  });
+  if (input.projectId) query.set("projectId", input.projectId);
+  if (input.threadId) query.set("threadId", input.threadId);
+  if (input.surface) query.set("surface", input.surface);
+  return request<ComposerCandidatesResponse>(`/api/local/ai/composer/candidates?${query}`, { signal });
+}
+
+export async function rebindAiChatComposerReferences(
+  input: ComposerRebindRequest,
+): Promise<ComposerRebindResponse> {
+  return request<ComposerRebindResponse>("/api/local/ai/composer/rebind", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export async function listAiChatThreads(signal?: AbortSignal): Promise<AiChatThread[]> {
@@ -318,12 +375,34 @@ export async function startAiChatTurn(
   return data.run;
 }
 
+export async function startAiChatComposerTurn(
+  threadId: string,
+  input: ComposerTurnInput,
+): Promise<AiChatRun> {
+  const data = await request<{ run: AiChatRun }>(
+    `/api/local/ai/threads/${encodeURIComponent(threadId)}/turns`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+  return data.run;
+}
+
 export async function interruptAiChatRun(runId: string): Promise<AiChatRun> {
   const data = await request<{ run: AiChatRun }>(
     `/api/local/ai/runs/${encodeURIComponent(runId)}/interrupt`,
     { method: "POST" },
   );
   return data.run;
+}
+
+export async function compactAiChatThread(threadId: string): Promise<AiChatThread> {
+  const data = await request<{ thread: AiChatThread }>(
+    `/api/local/ai/threads/${encodeURIComponent(threadId)}/compact`,
+    { method: "POST" },
+  );
+  return data.thread;
 }
 
 export function subscribeAiChatThread(
@@ -458,6 +537,14 @@ export function listTasks(projectId: string, signal?: AbortSignal): Promise<Task
   return listTasksByArchive(projectId, "false", signal);
 }
 
+export async function getTask(taskId: string, signal?: AbortSignal): Promise<Task> {
+  const data = await request<{ task: Task }>(
+    `/api/tasks/${encodeURIComponent(taskId)}`,
+    { signal },
+  );
+  return data.task;
+}
+
 export function listArchivedTasks(projectId: string, signal?: AbortSignal): Promise<Task[]> {
   return listTasksByArchive(projectId, "true", signal);
 }
@@ -481,14 +568,21 @@ export async function updateTask(task: Task, draft: TaskDraft, threadId?: string
 export async function moveTask(
   task: Task,
   status: TaskStatus,
-  sortOrder: number,
+  sortOrder?: number,
+  threadBinding?: CodexThreadBinding | null,
   threadId?: string,
 ): Promise<Task> {
   const data = await request<{ task: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/move`,
     {
       method: "POST",
-      body: JSON.stringify({ version: task.version, status, sortOrder, ...(threadId ? { threadId } : {}) }),
+      body: JSON.stringify({
+        version: task.version,
+        status,
+        ...(sortOrder === undefined ? {} : { sortOrder }),
+        ...(threadBinding === undefined ? {} : { threadBinding }),
+        ...(threadId ? { threadId } : {}),
+      }),
     },
   );
   return data.task;
@@ -572,12 +666,21 @@ export async function listTaskActivities(
   return data.activities;
 }
 
-export async function createComment(taskId: string, body: string, threadId?: string): Promise<Comment> {
+export async function createComment(
+  taskId: string,
+  body: string,
+  threadId?: string,
+  threadBinding?: CodexThreadBinding | null,
+): Promise<Comment> {
   const data = await request<{ comment: Comment }>(
     `/api/tasks/${encodeURIComponent(taskId)}/comments`,
     {
       method: "POST",
-      body: JSON.stringify({ body, ...(threadId ? { threadId } : {}) }),
+      body: JSON.stringify({
+        body,
+        ...(threadId ? { threadId } : {}),
+        ...(threadBinding === undefined ? {} : { threadBinding }),
+      }),
     },
   );
   return data.comment;
@@ -609,7 +712,11 @@ export async function listAttachments(taskId: string, signal?: AbortSignal): Pro
   return data.attachments;
 }
 
-export async function uploadAttachment(taskId: string, file: File): Promise<Attachment> {
+export async function uploadAttachment(
+  taskId: string,
+  file: File,
+  kind: Attachment["kind"],
+): Promise<Attachment> {
   const data = await request<{ attachment: Attachment }>(
     `/api/tasks/${encodeURIComponent(taskId)}/attachments`,
     {
@@ -617,6 +724,7 @@ export async function uploadAttachment(taskId: string, file: File): Promise<Atta
       headers: {
         "Content-Type": file.type || "application/octet-stream",
         "X-Taskboard-Filename": encodeURIComponent(file.name),
+        "X-Taskboard-Attachment-Kind": kind,
       },
       body: file,
     },
@@ -624,7 +732,11 @@ export async function uploadAttachment(taskId: string, file: File): Promise<Atta
   return data.attachment;
 }
 
-export async function uploadCommentAttachment(commentId: string, file: File): Promise<Attachment> {
+export async function uploadCommentAttachment(
+  commentId: string,
+  file: File,
+  kind: Attachment["kind"],
+): Promise<Attachment> {
   const data = await request<{ attachment: Attachment }>(
     `/api/comments/${encodeURIComponent(commentId)}/attachments`,
     {
@@ -632,6 +744,7 @@ export async function uploadCommentAttachment(commentId: string, file: File): Pr
       headers: {
         "Content-Type": file.type || "application/octet-stream",
         "X-Taskboard-Filename": encodeURIComponent(file.name),
+        "X-Taskboard-Attachment-Kind": kind,
       },
       body: file,
     },
@@ -667,8 +780,4 @@ export function resolvePersistedAttachmentUrl(value: string): string {
     return value;
   }
   return value;
-}
-
-export function markdownIncludesAttachment(markdown: string, attachment: Attachment): boolean {
-  return markdown.includes(`api/attachments/${encodeURIComponent(attachment.id)}/content`);
 }

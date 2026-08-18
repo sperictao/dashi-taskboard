@@ -89,8 +89,10 @@ export interface NewTaskEditorDraft {
 }
 
 interface TaskEditorProps {
+  projectId: string;
   task: Task | null;
   tasks: Task[];
+  referenceTasks: Task[];
   initialStatus: TaskStatus;
   initialDraft: NewTaskEditorDraft | null;
   labels: string[];
@@ -144,8 +146,10 @@ function contextLabel(
 }
 
 export function TaskEditor({
+  projectId,
   task,
   tasks,
+  referenceTasks,
   initialStatus,
   initialDraft,
   labels: availableLabels,
@@ -183,6 +187,7 @@ export function TaskEditor({
   const [createMore, setCreateMore] = useState(false);
   const [menu, setMenu] = useState<"status" | "priority" | "assignee" | "labels" | "development" | "more" | "due" | "recurrence" | null>(null);
   const [relationMenu, setRelationMenu] = useState<DraftRelationMenu | null>(null);
+  const [moreMenuPosition, setMoreMenuPosition] = useState<{ right: number; bottom: number } | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<TaskEditorError | null>(null);
@@ -206,6 +211,11 @@ export function TaskEditor({
   const selectedSubIssues = subIssueIds
     .map((id) => taskById.get(id))
     .filter((candidate): candidate is Task => candidate !== undefined);
+  const selectedRelationChips = [
+    ...selectedSubIssues.map((issue) => ({ type: "subIssue" as const, issue })),
+    ...(selectedParent ? [{ type: "parent" as const, issue: selectedParent }] : []),
+    ...selectedRelated.map((issue) => ({ type: "related" as const, issue })),
+  ];
   const selectedParentAncestorIds = useMemo(() => {
     const ids = new Set<string>();
     let currentId = parentId;
@@ -270,7 +280,10 @@ export function TaskEditor({
   }, [menu]);
 
   useEffect(() => {
-    if (menu !== "more") setRelationMenu(null);
+    if (menu !== "more") {
+      setRelationMenu(null);
+      setMoreMenuPosition(null);
+    }
   }, [menu]);
 
   function toggleDraftRelation(candidate: Task) {
@@ -285,6 +298,20 @@ export function TaskEditor({
         ? current.filter((id) => id !== candidate.id)
         : [...current, candidate.id]);
     }
+  }
+
+  function toggleMoreMenu() {
+    setRelationMenu(null);
+    if (menu === "more") {
+      setMenu(null);
+      return;
+    }
+    const rect = moreMenuRef.current?.getBoundingClientRect();
+    setMoreMenuPosition(rect ? {
+      right: window.innerWidth - rect.right,
+      bottom: window.innerHeight - rect.top + 8,
+    } : null);
+    setMenu("more");
   }
 
   useEffect(() => {
@@ -512,6 +539,8 @@ export function TaskEditor({
               className="composer-description inline-media-description"
               segments={descriptionSegments}
               mentionTasks={tasks}
+              referenceTasks={referenceTasks}
+              completionContext={{ projectId, surface: "issue-description" }}
               placeholder={text("添加描述…", "Add description…")}
               ariaLabel={text("描述", "Description")}
               disabled={saving}
@@ -633,10 +662,51 @@ export function TaskEditor({
               </button>
             )}
 
+            {!task && selectedRelationChips.map(({ type, issue }) => {
+              const identifier = issue.externalKey ?? issue.identifier;
+              const relationLabel = type === "subIssue"
+                ? text("子", "Sub")
+                : type === "parent"
+                  ? text("父", "Parent")
+                  : text("关联", "Related");
+              return (
+                <span className="property-control property-relation-chip" key={`${type}:${issue.id}`}>
+                  <span className="property-relation-kind">{relationLabel}</span>
+                  <span>{identifier}</span>
+                  <span className="property-relation-tooltip" role="tooltip">{issue.title}</span>
+                  <button
+                    className="property-relation-remove"
+                    type="button"
+                    aria-label={text(`移除 ${identifier}`, `Remove ${identifier}`)}
+                    onClick={() => {
+                      if (type === "parent") setParentId(null);
+                      else if (type === "related") {
+                        setRelatedIds((current) => current.filter((id) => id !== issue.id));
+                      } else {
+                        setSubIssueIds((current) => current.filter((id) => id !== issue.id));
+                      }
+                    }}
+                  >
+                    <LinearIcon name="close" />
+                  </button>
+                </span>
+              );
+            })}
+
             <div className="composer-menu-anchor" ref={moreMenuRef}>
-              <button className="property-control property-more" type="button" aria-label={text("更多属性", "More properties")} onClick={() => { setRelationMenu(null); setMenu(menu === "more" ? null : "more"); }}><LinearIcon name="more" /></button>
+              <button className="property-control property-more" type="button" aria-label={text("更多属性", "More properties")} onClick={toggleMoreMenu}><LinearIcon name="more" /></button>
               {menu === "more" && (
-                <div className="composer-popover more-popover" role="menu">
+                <div
+                  className="composer-popover more-popover"
+                  role="menu"
+                  style={moreMenuPosition ? {
+                    position: "fixed",
+                    top: "auto",
+                    right: moreMenuPosition.right,
+                    bottom: moreMenuPosition.bottom,
+                    left: "auto",
+                  } : undefined}
+                >
                   <button type="button" onClick={() => setMenu("due")}><span><LinearIcon name="calendarAdd" /></span><strong>{text("设置截止日期", "Set due date")}</strong><kbd>⇧ D</kbd><b><LinearIcon name="chevronRight" /></b></button>
                   <button type="button" onClick={() => setMenu("recurrence")}><span><LinearIcon name="recurrence" /></span><strong>{text("设置重复…", "Set recurrence…")}</strong><b><LinearIcon name="chevronRight" /></b></button>
                   {!task && (
