@@ -382,16 +382,20 @@ function DescriptionDocument({
         if (!task) {
           return (
             <span className="issue-reference-inline">
-              <span className="issue-reference-id">{reference.identifier}</span>
+              <span className="issue-reference-identity">
+                <span className="issue-reference-id">{reference.identifier}</span>
+              </span>
             </span>
           );
         }
         return (
           <span className={`issue-reference-inline issue-reference-status-${task.status}`}>
-            <span className={`status-icon issue-reference-status status-icon-${STATUS_DETAILS[task.status].tone}`}>
-              <ColumnStatusIcon status={task.status === "backlog" ? "todo" : task.status} />
+            <span className="issue-reference-identity">
+              <span className={`status-icon issue-reference-status status-icon-${STATUS_DETAILS[task.status].tone}`}>
+                <ColumnStatusIcon status={task.status === "backlog" ? "todo" : task.status} />
+              </span>
+              <span className="issue-reference-id">{task.externalKey ?? task.identifier}</span>
             </span>
-            <span className="issue-reference-id">{task.externalKey ?? task.identifier}</span>
             <span className="issue-reference-title">{task.title}</span>
           </span>
         );
@@ -1581,7 +1585,7 @@ export function TaskDetail({
                 <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
                 <span>{openingThread
                   ? text("正在打开…", "Opening…")
-                  : text("在对话中打开", "Open in conversation")}</span>
+                  : text("在新对话打开", "Open in new conversation")}</span>
               </button>
               {currentTask.externalUrl && (
                 <a
@@ -1743,7 +1747,16 @@ export function TaskDetail({
                 }, "developmentContext")}
               />
             </div>
-            <label className="detail-property-row">
+            <label
+              className="detail-property-row detail-date-property-row"
+              onClick={(event) => {
+                const input = event.currentTarget.querySelector("input");
+                if (input && !input.disabled) {
+                  event.preventDefault();
+                  input.showPicker();
+                }
+              }}
+            >
               <span className="detail-property-icon" aria-hidden="true"><LinearIcon name="calendar" /></span>
               <span className="detail-property-label">{text("开始日期", "Start date")}</span>
               <input
@@ -1755,7 +1768,16 @@ export function TaskDetail({
                 }, "startDate")}
               />
             </label>
-            <label className="detail-property-row">
+            <label
+              className="detail-property-row detail-date-property-row"
+              onClick={(event) => {
+                const input = event.currentTarget.querySelector("input");
+                if (input && !input.disabled) {
+                  event.preventDefault();
+                  input.showPicker();
+                }
+              }}
+            >
               <span className="detail-property-icon" aria-hidden="true"><LinearIcon name="calendar" /></span>
               <span className="detail-property-label">{text("截止日期", "Due date")}</span>
               <input
