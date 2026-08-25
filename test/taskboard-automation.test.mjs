@@ -10,11 +10,6 @@ import {
   reconcileTaskboardAutomation,
   taskboardAutomationPolicyOperation,
 } from "../shared/taskboard-automation.mjs";
-import {
-  AUTOMATION_MODELS,
-  isSupportedModelEffort,
-  withAutomationModel,
-} from "../shared/taskboard-automation-options.mjs";
 
 const baseRequest = {
   id: "host-request-1",
@@ -58,64 +53,7 @@ const remoteRequest = {
   ],
 };
 
-test("the automation model catalog matches Codex and normalizes unsupported efforts", () => {
-  assert.deepEqual(AUTOMATION_MODELS, [
-    {
-      label: "5.6 Sol",
-      slug: "gpt-5.6-sol",
-      defaultEffort: "low",
-      efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-    },
-    {
-      label: "5.6 Terra",
-      slug: "gpt-5.6-terra",
-      defaultEffort: "medium",
-      efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-    },
-    {
-      label: "5.6 Luna",
-      slug: "gpt-5.6-luna",
-      defaultEffort: "medium",
-      efforts: ["low", "medium", "high", "xhigh", "max"],
-    },
-    {
-      label: "5.5",
-      slug: "gpt-5.5",
-      defaultEffort: "medium",
-      efforts: ["low", "medium", "high", "xhigh"],
-    },
-    {
-      label: "5.4",
-      slug: "gpt-5.4",
-      defaultEffort: "medium",
-      efforts: ["low", "medium", "high", "xhigh"],
-    },
-    {
-      label: "5.4 Mini",
-      slug: "gpt-5.4-mini",
-      defaultEffort: "medium",
-      efforts: ["low", "medium", "high", "xhigh"],
-    },
-  ]);
-
-  const current = {
-    status: "ACTIVE",
-    intervalMinutes: 5,
-    model: "gpt-5.6-sol",
-    reasoningEffort: "ultra",
-  };
-  assert.deepEqual(withAutomationModel(current, "gpt-5.6-terra"), {
-    ...current,
-    model: "gpt-5.6-terra",
-  });
-  assert.deepEqual(withAutomationModel(current, "gpt-5.6-luna"), {
-    ...current,
-    model: "gpt-5.6-luna",
-    reasoningEffort: "medium",
-  });
-});
-
-test("the automation host request accepts only whitelisted project automation options", () => {
+test("the automation host request accepts catalog-provided project automation options", () => {
   assert.deepEqual(parseTaskboardAutomationHostRequest(baseRequest), baseRequest);
   assert.equal(
     parseTaskboardAutomationHostRequest({ ...baseRequest, operation: "delete" }),
@@ -145,41 +83,22 @@ test("the automation host request accepts only whitelisted project automation op
     })?.reasoningEffort,
     "ultra",
   );
-  assert.equal(
-    parseTaskboardAutomationHostRequest({ ...baseRequest, model: "gpt-future" }),
-    null,
+  assert.deepEqual(
+    parseTaskboardAutomationHostRequest({
+      ...baseRequest,
+      model: "gemini-3.1-pro-preview",
+      reasoningEffort: "xhigh",
+    }),
+    {
+      ...baseRequest,
+      model: "gemini-3.1-pro-preview",
+      reasoningEffort: "xhigh",
+    },
   );
   assert.equal(
     parseTaskboardAutomationHostRequest({ ...baseRequest, reasoningEffort: "xhigh" })?.reasoningEffort,
     "xhigh",
   );
-  assert.equal(
-    parseTaskboardAutomationHostRequest({
-      ...baseRequest,
-      model: "gpt-5.4",
-      reasoningEffort: "ultra",
-    }),
-    null,
-  );
-  const allEfforts = ["low", "medium", "high", "xhigh", "max", "ultra"];
-  for (const intervalMinutes of [5, 10, 15, 30, 60]) {
-    for (const model of AUTOMATION_MODELS) {
-      for (const effort of allEfforts) {
-        assert.equal(
-          parseTaskboardAutomationHostRequest({
-            ...baseRequest,
-            intervalMinutes,
-            model: model.slug,
-            reasoningEffort: effort,
-          }) !== null,
-          model.efforts.includes(effort),
-          `${intervalMinutes}m/${model.slug}/${effort}`,
-        );
-      }
-    }
-  }
-  assert.equal(isSupportedModelEffort("gpt-5.6-luna", "max"), true);
-  assert.equal(isSupportedModelEffort("gpt-5.6-luna", "ultra"), false);
   assert.equal(
     parseTaskboardAutomationHostRequest({ ...baseRequest, workspacePath: "relative/path" }),
     null,
@@ -234,6 +153,16 @@ test("the stable name and generated prompt are project-scoped and encode the cla
   assert.match(prompt, /关键改动、验证结果、执行结果和剩余风险/);
   assert.match(prompt, /in_review/);
   assert.match(prompt, /已绑定.*branch.*worktree/);
+  assert.match(prompt, /Codex list_threads/);
+  assert.match(prompt, /list_threads（limit=50）/);
+  assert.match(prompt, /pinnedThreads 与 threads/);
+  assert.match(prompt, /projectId="codex-project-123"/);
+  assert.match(prompt, /hostId="local"/);
+  assert.match(prompt, /cwd="\/Users\/example\/Documents\/ppt-skill"/);
+  assert.match(prompt, /legacy local 原位升级为完整 binding/);
+  assert.match(prompt, /--binding-thread-id "\$CODEX_THREAD_ID"/);
+  assert.match(prompt, /认领后的每一次 issue move.*五个完整 binding 字段/);
+  assert.match(prompt, /不要省略 binding，避免把完整绑定降级为 legacy local/);
 });
 
 test("the remote automation prompt keeps taskctl local and delegates work to the SSH project", () => {
@@ -568,17 +497,25 @@ test("pause never creates and list returns only sanitized matching project autom
     }],
   });
 
-  const invalidPair = {
+  const catalogPair = {
     ...matching,
-    id: "invalid-pair",
-    model: "gpt-5.4",
-    reasoningEffort: "ultra",
+    id: "catalog-pair",
+    model: "gemini-3.1-pro-preview",
+    reasoningEffort: "xhigh",
   };
-  const invalidListed = await reconcileTaskboardAutomation(
+  const catalogListed = await reconcileTaskboardAutomation(
     { ...baseRequest, operation: "list" },
-    async () => ({ items: [invalidPair] }),
+    async () => ({ items: [catalogPair] }),
   );
-  assert.deepEqual(invalidListed, { items: [] });
+  assert.deepEqual(catalogListed, {
+    items: [{
+      id: "catalog-pair",
+      status: "ACTIVE",
+      model: "gemini-3.1-pro-preview",
+      reasoningEffort: "xhigh",
+      rrule: "RRULE:FREQ=MINUTELY;INTERVAL=5",
+    }],
+  });
 });
 
 test("pause is idempotent for an already paused matching automation", async () => {
