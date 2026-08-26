@@ -313,6 +313,9 @@ function codexExecutablePath(appPath) {
 }
 
 function codexAppProcesses(appPath) {
+  // On Windows there is no /bin/ps; the Rust launcher owns Codex startup/detection.
+  if (process.platform === "win32") return [];
+
   const processes = spawnSync("/bin/ps", ["-ww", "-axo", "pid=,command="], {
     encoding: "utf8",
     env: withoutTaskboardLauncherEnvironment(process.env),
