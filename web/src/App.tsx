@@ -1,3 +1,4 @@
+import { resolveInlineAttachments } from "./inlineAttachments";
 import {
   Fragment,
   lazy,
@@ -25,7 +26,6 @@ import {
   deleteProject as deleteProjectRequest,
   getAiChatCatalog,
   getCodexThreadProgress,
-  getHostRuntime,
   getJiraConnection,
   getTaskboardRevision,
   getTaskboardMetadata,
@@ -64,8 +64,6 @@ import { IssueListView } from "./components/IssueListView";
 import { JiraConnectionDialog } from "./components/JiraConnectionDialog";
 import { ArchivedTasksColumn, OtherTasksPanel } from "./components/OtherTasksPanel";
 import {
-  resolveInlineAttachmentMarkdown,
-  resolveInlineMediaMarkdown,
   type PendingInlineAttachment,
   type PendingInlineImage,
 } from "./components/InlineMediaComposer";
@@ -110,6 +108,7 @@ import {
   type OtherTaskTab,
 } from "./issueBoardStatuses";
 import {
+  indexAiThreadsByTask,
   normalizeCodexThreadId,
   taskCardPresentation,
   type TaskCardPresentation,
@@ -386,7 +385,7 @@ function getInitialTheme(): Theme {
   const host = query.get("host");
   if (
     window.parent !== window
-    && (host === "codex" || host === "workbuddy" || host === "deepseek-harness")
+    && (host === "codex" || host === "deepseek-harness")
   ) {
     const fromQuery = query.get("theme");
     if (isTheme(fromQuery)) return fromQuery;
@@ -708,7 +707,7 @@ function LocalRealtimeSync({
 export function App() {
   const query = useMemo(() => new URL(document.baseURI).searchParams, []);
   const host = query.get("host");
-  const embedded = host === "codex" || host === "workbuddy" || host === "deepseek-harness";
+  const embedded = host === "codex" || host === "deepseek-harness";
   const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);
@@ -739,7 +738,6 @@ export function App() {
       running: boolean;
     } | null>
   >({});
-  const [processingNow, setProcessingNow] = useState(() => Date.now());
   const [recentProjectIds, setRecentProjectIds] = useState(readRecentProjectIds);
   const initialProjectId = query.get("project") ?? recentProjectIds[0] ?? ALL_PROJECTS_ID;
   const [projects, setProjects] = useState<Project[]>([]);
@@ -1821,23 +1819,6 @@ export function App() {
     };
   }, [embedded, host]);
 
-  useEffect(() => {
-    if (host !== "workbuddy") return;
-    let disposed = false;
-    const syncRuntime = async () => {
-      try {
-        const runtime = await getHostRuntime();
-        if (!disposed) setHostContext(runtime);
-      } catch {}
-    };
-    void syncRuntime();
-    const timer = window.setInterval(syncRuntime, 1_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [host]);
-
   useLayoutEffect(() => {
     if (!embedded || window.parent === window || !dragRegionRef.current) return;
     const region = dragRegionRef.current;
@@ -2308,6 +2289,7 @@ export function App() {
     setOtherTasksTab(otherTaskTabs[0]);
   }, [otherTaskTabsKey, otherTasksAvailable, otherTasksTab]);
 
+  const aiThreadsByTask = useMemo(() => indexAiThreadsByTask(aiThreads), [aiThreads]);
   const taskPresentations = useMemo(() => Object.fromEntries(tasks.map((task) => {
     const storageKey = issueReadStorageKey(issueReadMode, task);
     const readActivityKey = readActivityKeys[storageKey] ?? taskboardStorage.getItem(storageKey);
@@ -2319,14 +2301,14 @@ export function App() {
     const taskThreadId = normalizeCodexThreadId(task.threadId);
     return [task.id, taskCardPresentation(
       task,
-      aiThreads,
+      aiThreadsByTask.get(task.id) ?? [],
       unread,
       runningNativeThreadId,
       hostContext?.threadTodoProgress ?? null,
       taskThreadId ? codexThreadProgress[taskThreadId] ?? null : undefined,
     )];
   })) as Record<string, TaskCardPresentation>, [
-    aiThreads,
+    aiThreadsByTask,
     codexThreadProgress,
     hostContext?.threadId,
     hostContext?.threadRunning,
@@ -2335,18 +2317,6 @@ export function App() {
     readActivityKeys,
     tasks,
   ]);
-  const hasRunningTask = useMemo(
-    () => Object.values(taskPresentations).some((presentation) => presentation.processing.running),
-    [taskPresentations],
-  );
-
-  useEffect(() => {
-    setProcessingNow(Date.now());
-    if (!hasRunningTask) return;
-    const timer = window.setInterval(() => setProcessingNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [hasRunningTask]);
-
 
   function selectBoardView(view: BoardView) {
     closeContextMenu();
@@ -2430,14 +2400,10 @@ export function App() {
         postCreateWriteFailed = true;
       } else if (inlineFiles.length > 0 || inlineImages.length > 0) {
         try {
-          const description = resolveInlineAttachmentMarkdown(
-            resolveInlineMediaMarkdown(
-              draft.description,
-              inlineImages,
-              inlineAttachments,
-            ),
-            inlineFiles,
-            fileAttachments,
+          const description = resolveInlineAttachments(
+            draft.description,
+            [...inlineImages, ...inlineFiles],
+            [...inlineAttachments, ...fileAttachments],
           );
           saved = await updateTaskRequest(saved, { ...draft, description });
         } catch {
@@ -3846,7 +3812,6 @@ export function App() {
                         status={item}
                         tasks={tasksByStatus[item]}
                         presentations={taskPresentations}
-                        now={processingNow}
                         emptyMessage={hasActiveTaskFilters
                           ? text("当前筛选下无匹配议题", "No issues match the current filters")
                           : text("暂无议题", "No issues")}
@@ -3885,7 +3850,6 @@ export function App() {
                     tasksByStatus={tasksByStatus}
                     archivedTasks={filteredArchivedTasks}
                     presentations={taskPresentations}
-                    now={processingNow}
                     hasActiveFilters={hasActiveTaskFilters}
                     isDropTarget={otherTasksTab !== "archived" && dropTarget === otherTasksTab}
                     draggedTaskId={draggedTaskId}
