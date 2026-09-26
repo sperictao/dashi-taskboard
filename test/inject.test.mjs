@@ -6,30 +6,10 @@ import vm from "node:vm";
 import { parseTaskboardAutomationHostRequest } from "../shared/taskboard-automation.mjs";
 
 const sourceUrl = new URL("../inject/codex-taskboard.user.js", import.meta.url);
-// 归一化行尾：Windows 上 core.autocrlf 检出为 CRLF，切片逻辑按 LF 匹配
 const source = (await readFile(sourceUrl, "utf8")).replaceAll("\r\n", "\n");
 const webStyles = await readFile(new URL("../web/src/styles.css", import.meta.url), "utf8");
 const webApp = await readFile(new URL("../web/src/App.tsx", import.meta.url), "utf8");
 const embeddedHost = await readFile(new URL("../web/src/embeddedHost.mjs", import.meta.url), "utf8");
-
-function findReferenceButtonWith(document) {
-  const normalizedStart = source.indexOf("  function normalizedLabel");
-  const normalizedEnd = source.indexOf("\n\n  function hostLanguage", normalizedStart);
-  const finderStart = source.indexOf("  function buttonMatches");
-  const finderEnd = source.indexOf("\n\n  function replaceEntryIcon", finderStart);
-  assert.ok(normalizedStart >= 0 && normalizedEnd > normalizedStart, "normalizedLabel source not found");
-  assert.ok(finderStart >= 0 && finderEnd > finderStart, "reference button source not found");
-  const build = new Function(
-    "document",
-    `"use strict";
-      const PLUGIN_LABELS = ["插件", "plugins", "外掛程式", "プラグイン"];
-      const OWNED_ATTRIBUTE = "data-codex-taskboard-owned";
-      ${source.slice(normalizedStart, normalizedEnd)}
-      ${source.slice(finderStart, finderEnd)}
-      return findReferenceButton;`,
-  );
-  return build(document)();
-}
 
 test("injection is an idempotent IIFE guarded by its current source hash", () => {
   assert.match(source, /^\(\(\) => \{/);
@@ -55,16 +35,15 @@ test("embedded page uses the launcher URL inside an opaque sandbox", () => {
   assert.doesNotMatch(source, /allow-same-origin/);
 });
 
-test("entry clones the native Plugins row and the page covers the complete Codex workspace", () => {
-  assert.match(source, /const PLUGIN_LABELS = \["插件", "plugins", "外掛程式", "プラグイン"\]/);
-  assert.match(source, /document\.querySelector\('aside nav\[role="navigation"\]'\)/);
-  assert.match(source, /if \(plugin\?\.parentElement\) return plugin;/);
+test("entry clones the native Explore rail button and the page covers the complete Codex workspace", () => {
+  assert.match(source, /const EXPLORE_LABELS = \["探索", "explore"\]/);
+  assert.match(source, /document\.querySelector\("nav\[data-app-navigation-rail\]"\)/);
   assert.match(source, /button\.getAttribute\(OWNED_ATTRIBUTE\) !== "true"/);
-  assert.match(source, /rect\.bottom <= sectionTop/);
+
   assert.match(source, /const button = reference\.cloneNode\(true\)/);
-  assert.match(source, /reference\.after\(entry\)/);
+  assert.match(source, /reference\.before\(entry\)/);
   assert.match(source, /document\.querySelector\("\.app-shell-main-content-frame"\)/);
-  assert.match(source, /const surface = viewport\?\.parentElement/);
+  assert.match(source, /const surface = viewport\?\.closest\("\[data-app-shell-workspace-row\]"\)/);
   assert.match(source, /surface\.appendChild\(page\)/);
   assert.match(source, /#\$\{PAGE_ID\} \{[\s\S]*?top: 0;/);
   assert.doesNotMatch(source, /--codex-taskboard-top-offset/);
@@ -75,27 +54,7 @@ test("entry clones the native Plugins row and the page covers the complete Codex
   assert.doesNotMatch(source, /aria-modal/);
 });
 
-test("entry finds Plugins in the semantic navigation after sidebar data hooks disappear", () => {
-  const pluginParent = { children: [] };
-  const plugin = {
-    tagName: "BUTTON",
-    textContent: "插件",
-    getAttribute: () => null,
-    parentElement: pluginParent,
-  };
-  pluginParent.children = [plugin];
-  const navigation = {
-    querySelector: () => null,
-    querySelectorAll: (selector) => selector === "button" ? [plugin] : [],
-  };
-  const document = {
-    querySelector: (selector) => selector === 'aside nav[role="navigation"]' ? navigation : null,
-  };
-
-  assert.equal(findReferenceButtonWith(document), plugin);
-});
-
-test("entry recognizes known Plugins labels and structurally anchors an unenumerated locale", () => {
+test("entry recognizes the Explore rail labels", () => {
   const normalizedLabelSource = source.slice(
     source.indexOf("function normalizedLabel"),
     source.indexOf("\n\n  function hostLanguage"),
@@ -105,48 +64,28 @@ test("entry recognizes known Plugins labels and structurally anchors an unenumer
     source.indexOf("\n\n  function replaceEntryIcon"),
   );
   let currentButtons;
-  let currentSection;
-  const scroll = {
-    querySelector: (selector) => selector === "[data-app-action-sidebar-section]" ? currentSection : null,
+  const rail = {
     querySelectorAll: (selector) => selector === "button" ? currentButtons : [],
   };
   const findReferenceButton = vm.runInNewContext(`(() => {
-    const PLUGIN_LABELS = ["插件", "plugins", "外掛程式", "プラグイン"];
+    const EXPLORE_LABELS = ["探索", "explore"];
     const OWNED_ATTRIBUTE = "data-codex-taskboard-owned";
     ${normalizedLabelSource}
     ${referenceSource}
     return findReferenceButton;
   })()`, {
-    document: { querySelector: () => scroll },
+    document: { querySelector: () => rail },
   });
 
-  for (const textContent of ["插件", "外掛程式", "プラグイン", "Plugins"]) {
+  for (const textContent of ["探索", "Explore"]) {
     const currentButton = {
-      textContent,
+      querySelector: (selector) => selector === ".sr-only" ? { textContent } : null,
       getAttribute: () => null,
       parentElement: {},
     };
     currentButtons = [currentButton];
-    currentSection = null;
     assert.equal(findReferenceButton(), currentButton);
   }
-
-  const topButton = (textContent, top, owned = false) => ({
-    textContent,
-    getAttribute: (name) => name === "data-codex-taskboard-owned" && owned ? "true" : null,
-    getBoundingClientRect: () => ({ top, bottom: top + 30, height: 30 }),
-    parentElement: {},
-  });
-  const unenumeratedPlugin = topButton("Приклучоци", 160);
-  currentButtons = [
-    topButton("Барања за повлекување", 100),
-    topButton("Локации", 120),
-    topButton("Закажано", 140),
-    unenumeratedPlugin,
-    topButton("Taskboard", 180, true),
-  ];
-  currentSection = { getBoundingClientRect: () => ({ top: 200 }) };
-  assert.equal(findReferenceButton(), unenumeratedPlugin);
 
   const languageDocument = { documentElement: { lang: "" } };
   const languageSource = source.slice(
