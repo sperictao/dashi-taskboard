@@ -1243,6 +1243,9 @@ async function resolveTaskboardBaseUrl(env, overrides) {
   const configuredDescriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
   const isWsl = isWslEnvironment(env);
   const wslRuntimeFile = env.CODEX_TASKBOARD_WSL_RUNTIME_FILE;
+  // Codex Pro Max runs Taskboard from an external launcher. Store discovery in
+  // the user home because Store/MSIX Codex processes do not inherit launcher env.
+  const defaultDescriptorPath = defaultLauncherRuntimeFile(env) ?? sourceRuntimeFile;
   const descriptorCandidates = configuredDescriptorPath !== undefined
     ? [{
       path: configuredDescriptorPath,
@@ -1267,7 +1270,7 @@ async function resolveTaskboardBaseUrl(env, overrides) {
             windowsTransport: true,
           }))),
         {
-          path: sourceRuntimeFile,
+          path: defaultDescriptorPath,
           read: readFile,
           required: false,
           windowsTransport: false,
@@ -1399,6 +1402,12 @@ async function fetchThroughWindows(url, init, overrides) {
     });
     child.stdin.end(init?.body);
   });
+}
+
+export function defaultLauncherRuntimeFile(env) {
+  const home = env.USERPROFILE ?? env.HOME;
+  if (!home) return null;
+  return path.join(home, ".codex-pro-max", "launcher-runtime.json");
 }
 
 async function resolveCompanionUrl(env, overrides) {
