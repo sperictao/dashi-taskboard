@@ -206,6 +206,7 @@ test("the remote automation prompt keeps taskctl local and delegates work to the
 
 test("the generated automation command uses the packaged CLI and an argv runtime file", () => {
   const previous = process.env.CODEX_TASKBOARD_RUNTIME_FILE;
+  // Windows 上 process.execPath 是全路径且 cliPath 为反斜杠，路径断言保持平台无关
   process.env.CODEX_TASKBOARD_RUNTIME_FILE = "/Users/example/Library/Application Support/Codex Taskboard/launcher-runtime.json";
   try {
     const prompt = buildTaskboardAutomationPrompt(baseRequest);
