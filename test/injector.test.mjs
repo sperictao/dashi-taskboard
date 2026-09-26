@@ -340,7 +340,9 @@ test("attach reconciles the renderer against a hashed current injection source",
 });
 
 test("the injector ignores auxiliary Codex windows", () => {
-  assert.match(source, /!target\.url\?\.includes\("initialRoute=%2Fglobal-dictation"\)/);
+  assert.match(source, /function isExcludedCodexRoute/);
+  assert.match(source, /route === "\/global-dictation"/);
+  assert.match(source, /route === "\/avatar-overlay"/);
 });
 
 test("a completed web build refreshes an already-open Codex iframe", () => {
