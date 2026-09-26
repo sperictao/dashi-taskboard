@@ -4,7 +4,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { main, parseArgs } from "../cli/taskctl.mjs";
+import { defaultLauncherRuntimeFile, main, parseArgs } from "../cli/taskctl.mjs";
 
 function capture() {
   let value = "";
@@ -79,6 +79,18 @@ test("CODEX_TASKBOARD_URL overrides the service origin", async () => {
   assert.equal(requestedUrl.toString(), "https://tasks.example.test/api/projects");
 });
 
+test("default launcher runtime file resolves under the user home", () => {
+  assert.equal(
+    defaultLauncherRuntimeFile({ USERPROFILE: "C:\\Users\\Tester" }),
+    path.join("C:\\Users\\Tester", ".codex-pro-max", "launcher-runtime.json"),
+  );
+  assert.equal(
+    defaultLauncherRuntimeFile({ HOME: "/home/tester" }),
+    path.join("/home/tester", ".codex-pro-max", "launcher-runtime.json"),
+  );
+  assert.equal(defaultLauncherRuntimeFile({}), null);
+});
+
 test("--runtime-file reads the launcher endpoint without a leading environment assignment", async () => {
   let requestedUrl;
   const result = await run(
@@ -100,6 +112,67 @@ test("--runtime-file reads the launcher endpoint without a leading environment a
   assert.equal(requestedUrl.toString(), "http://127.0.0.1:51550/token/api/projects");
 });
 
+test("missing default launcher runtime endpoint falls back to the local service", async () => {
+  let requestedUrl;
+  const result = await run(
+    ["project", "list", "--json"],
+    async (url) => {
+      requestedUrl = url;
+      return response({ projects: [] });
+    },
+    {
+      env: { USERPROFILE: "C:\\Users\\Tester" },
+      readFile: async () => {
+        throw Object.assign(new Error("not found"), { code: "ENOENT" });
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(requestedUrl.toString(), "http://127.0.0.1:47823/api/projects");
+});
+
+test("missing explicit launcher runtime endpoint remains an error", async () => {
+  const result = await run(
+    ["project", "list", "--json"],
+    async () => response({ projects: [] }),
+    {
+      env: { CODEX_TASKBOARD_RUNTIME_FILE: "C:\\runtime\\missing.json" },
+      readFile: async () => {
+        throw Object.assign(new Error("not found"), { code: "ENOENT" });
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.stderr.error.code, "SERVICE_UNAVAILABLE");
+});
+
+test("CODEX_TASKBOARD_URL takes precedence over runtime endpoint discovery", async () => {
+  let requestedUrl;
+  let descriptorRead = false;
+  const result = await run(
+    ["project", "list", "--json"],
+    async (url) => {
+      requestedUrl = url;
+      return response({ projects: [] });
+    },
+    {
+      env: {
+        CODEX_TASKBOARD_URL: "https://tasks.example.test/token",
+        CODEX_TASKBOARD_RUNTIME_FILE: "C:\\runtime\\launcher-runtime.json",
+      },
+      readFile: async () => {
+        descriptorRead = true;
+        throw new Error("must not read runtime descriptor");
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(descriptorRead, false);
+  assert.equal(requestedUrl.toString(), "https://tasks.example.test/token/api/projects");
+});
 test("WSL taskctl discovers the Windows launcher runtime descriptor from Windows APPDATA", async () => {
   let requestedUrl;
   const runtimeFile = path.join(
@@ -193,6 +266,7 @@ test("CODEX_TASKBOARD_WSL_RUNTIME_FILE overrides WSL automatic discovery", async
     "http://127.0.0.1:51988/override-token/api/projects",
   );
 });
+
 
 test("project create sends id, name, and an absolute workspace path", async () => {
   let requestBody;
