@@ -38,7 +38,7 @@ Use `--workspace-path` to associate a project with a local repository. `context 
 
 Use `project readme get` and `project readme set` to read and update the project's single root README document. Detailed multi-page documentation belongs in the project's local `docs/` folder.
 
-Set `CODEX_TASKBOARD_URL` to override the default local API origin, `http://127.0.0.1:47823`.
+Set `CODEX_TASKBOARD_URL` to override the default local API origin, `http://127.0.0.1:47823`. In Codex Pro Max, when no URL is inherited, `taskctl` also discovers the launcher's token-prefixed endpoint from `~/.codex-pro-max/launcher-runtime.json`. An explicit `CODEX_TASKBOARD_RUNTIME_FILE` takes precedence over that default file.
 
 For a shared cloud board, keep `taskctl` pointed at the **loopback companion** (local loopback service; see Terminology above) and configure the upstream HTTPS origin through it:
 
