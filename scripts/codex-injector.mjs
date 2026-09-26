@@ -99,6 +99,8 @@ const codexAutomationMethods = new Set([
   "automation-create",
   "automation-update",
 ]);
+const injectMaxAttempts = 3;
+const injectRetryDelayMs = 2_000;
 let codexAutomationRequestSequence = 0;
 let codexAppServerRequestSequence = 0;
 const taskConversationOperations = new Map();
@@ -735,6 +737,57 @@ class CdpConnection {
   }
 }
 
+function targetInitialRoute(target) {
+  try {
+    const url = new URL(target.url || "");
+    if (url.protocol !== "app:") return null;
+    return url.searchParams.get("initialRoute")?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isChatGptDesktopPage(target) {
+  const title = (target.title || "").trim().toLowerCase();
+  const url = (target.url || "").trim().toLowerCase();
+  return (
+    title === "chatgpt" &&
+    (url === "https://chatgpt.com" ||
+      url.startsWith("https://chatgpt.com/") ||
+      url === "https://chat.openai.com" ||
+      url.startsWith("https://chat.openai.com/") ||
+      url.startsWith("data:text/html"))
+  );
+}
+
+function isCodexPageTarget(target) {
+  const haystack = `${target.title || ""} ${target.url || ""}`.toLowerCase();
+  return haystack.includes("codex") || isChatGptDesktopPage(target);
+}
+
+function isExcludedCodexRoute(target) {
+  const route = targetInitialRoute(target);
+  return (
+    route === "/global-dictation" ||
+    route === "/avatar-overlay" ||
+    route === "/chatgpt/quick-chat" ||
+    route === "/chatgpt/quick-chat-prewarm" ||
+    (route?.startsWith("/chatgpt/quick-chat/") ?? false)
+  );
+}
+
+function isCodexCompositionSurface(target) {
+  try {
+    const url = new URL(target.url || "");
+    return (
+      url.protocol === "app:"
+      && url.pathname.toLowerCase().endsWith("/avatar-overlay-composition-surface.html")
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function codexTargets(port) {
   const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
   return targets.filter(isCodexTarget).map((target) => {
@@ -751,10 +804,15 @@ async function codexTargets(port) {
 function isCodexTarget(target) {
   return (
       target.type === "page" &&
-      !target.url?.includes("initialRoute=%2Fglobal-dictation") &&
-      !target.url?.includes("initialRoute=%2Favatar-overlay") &&
-      (target.url?.startsWith("app://") || target.title === "Codex")
+      target.webSocketDebuggerUrl &&
+      !isExcludedCodexRoute(target) &&
+      !isCodexCompositionSurface(target) &&
+      (target.url?.startsWith("app://") || isCodexPageTarget(target))
   );
+}
+
+function logInjector(message) {
+  console.error(`[codex-injector ${new Date().toISOString()}] ${message}`);
 }
 
 function tcpCdpRuntime(port) {
@@ -2877,23 +2935,39 @@ async function injectAll(
   for (const target of targets) {
     if (injectedTargets.has(target.id)) continue;
     const firstTarget = injectedTargets.size === 0 && results.length === 0;
-    const { result, connection } = await injectTarget(
-      runtime,
-      target,
-      source,
-      sourceHash,
-      shouldOpen && firstTarget,
-      firstTarget ? screenshotPath : null,
-      keepAlive,
-      supervisor,
-      attachExisting,
-      startupToken,
-      onCodexAppServerNotification,
-      onCodexAppServerReady,
-      onCodexAppServerUnavailable,
-    );
-    if (connection) injectedTargets.set(target.id, connection);
-    results.push({ targetId: target.id, title: target.title, url: target.url, ...result });
+    let lastError = null;
+    for (let attempt = 1; attempt <= injectMaxAttempts; attempt += 1) {
+      try {
+        const { result, connection } = await injectTarget(
+          runtime,
+          target,
+          source,
+          sourceHash,
+          shouldOpen && firstTarget,
+          firstTarget ? screenshotPath : null,
+          keepAlive,
+          supervisor,
+          attachExisting,
+          startupToken,
+          onCodexAppServerNotification,
+          onCodexAppServerReady,
+          onCodexAppServerUnavailable,
+        );
+        if (connection) injectedTargets.set(target.id, connection);
+        results.push({ targetId: target.id, title: target.title, url: target.url, ...result });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        logInjector(
+          `Injection into ${target.url || target.id} failed (attempt ${attempt}/${injectMaxAttempts}): ${error.message}`,
+        );
+        if (attempt < injectMaxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, injectRetryDelayMs));
+        }
+      }
+    }
+    if (lastError) throw lastError;
   }
   return results;
 }
@@ -3437,25 +3511,37 @@ async function main() {
     const firstOpenGeneration = openRequestGeneration;
     const shouldOpenFirstTarget = firstOpenGeneration > openedRequestGeneration;
     if (!idleAfterNormalExit && !nativeCodexBrowser) {
-      try {
-        firstResults = await injectAll(
-          cdpRuntime,
-          source,
-          sourceHash,
-          shouldOpenFirstTarget,
-          options.screenshot,
-          injectedTargets,
-          options.watch,
-          supervisor,
-          options.attachExisting,
-          options.startupToken,
-          forwardCodexAppServerNotification,
-          registerRoutableCodexConnection,
-          unregisterRoutableCodexConnection,
-        );
-      } catch (error) {
-        if (!options.watch) throw error;
-        console.error(`Waiting for Codex renderer: ${error.message}`);
+      let lastError = null;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          firstResults = await injectAll(
+            cdpRuntime,
+            source,
+            sourceHash,
+            shouldOpenFirstTarget,
+            options.screenshot,
+            injectedTargets,
+            options.watch,
+            supervisor,
+            options.attachExisting,
+            options.startupToken,
+            forwardCodexAppServerNotification,
+            registerRoutableCodexConnection,
+            unregisterRoutableCodexConnection,
+          );
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          logInjector(`Initial injection failed (attempt ${attempt}/2): ${error.message}`);
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, injectRetryDelayMs));
+          }
+        }
+      }
+      if (lastError) {
+        if (!options.watch) throw lastError;
+        console.error(`Waiting for Codex renderer: ${lastError.message}`);
         emitLauncherEvent("waitingForCodex");
       }
     }
